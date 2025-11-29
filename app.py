@@ -4,7 +4,7 @@ import gradio as gr
 from pathlib import Path
 from pydub import AudioSegment
 import sys
-
+import os
 ZIP_VOICE_REPO_PATH = os.getenv("ZIP_VOICE_REPO_PATH")
 ZIP_VOICE_APP_PATH= os.getenv("ZIP_VOICE_APP_PATH")
 
