@@ -88,7 +88,137 @@ def get_profile_names():
 def get_project_names():
     """Get list of project names"""
     return list(config_data["projects"].keys())
+# ====================SRT HELPER ============================
 
+import re
+
+def has_alphanumeric(text):
+    """Check if text contains any letter or number"""
+    return bool(re.search(r'[a-zA-Z0-9\u00C0-\u1EF9]', text))
+
+
+def count_words(text):
+    """Count words in text (supports Vietnamese and English)"""
+    # Remove punctuation and split by whitespace
+    words = re.findall(r'\b\w+\b', text)
+    return len(words)
+
+
+def split_text_by_punctuation(text, min_words=5, max_chars=100):
+    """
+    Split text by punctuation marks while keeping meaningful content
+    
+    Args:
+        text: Text to split
+        min_words: Minimum words per subtitle line (default: 5)
+        max_chars: Maximum characters per subtitle line
+    
+    Returns:
+        List of text chunks (each chunk has at least min_words words)
+    """
+    # Common punctuation marks for splitting
+    punctuation_pattern = r'([.!?;,。！？；，])'
+    
+    # Split by punctuation while keeping the marks
+    parts = re.split(punctuation_pattern, text)
+    
+    chunks = []
+    current_chunk = ""
+    
+    for i, part in enumerate(parts):
+        if not part.strip():
+            continue
+        
+        # If it's punctuation, append to current chunk
+        if re.match(punctuation_pattern, part):
+            current_chunk += part
+            
+            # Check if we should finalize this chunk
+            word_count = count_words(current_chunk)
+            
+            # Finalize on major punctuation if we have enough words
+            if part in '.!?。！？' and word_count >= min_words:
+                if has_alphanumeric(current_chunk):
+                    chunks.append(current_chunk.strip())
+                current_chunk = ""
+            # Or if too long
+            elif len(current_chunk) >= max_chars and word_count >= min_words:
+                if has_alphanumeric(current_chunk):
+                    chunks.append(current_chunk.strip())
+                current_chunk = ""
+        else:
+            # Add text to current chunk
+            potential_chunk = current_chunk + part
+            potential_word_count = count_words(potential_chunk)
+            
+            # If adding this would make it too long and we have enough words, split here
+            if len(potential_chunk) > max_chars and count_words(current_chunk) >= min_words:
+                if has_alphanumeric(current_chunk):
+                    chunks.append(current_chunk.strip())
+                current_chunk = part
+            else:
+                current_chunk = potential_chunk
+    
+    # Add remaining chunk if it has enough words
+    if current_chunk.strip():
+        word_count = count_words(current_chunk)
+        if word_count >= min_words and has_alphanumeric(current_chunk):
+            chunks.append(current_chunk.strip())
+        elif chunks:
+            # If too few words, merge with previous chunk
+            chunks[-1] = chunks[-1] + " " + current_chunk.strip()
+        else:
+            # If it's the only chunk, keep it even if below minimum
+            if has_alphanumeric(current_chunk):
+                chunks.append(current_chunk.strip())
+    
+    return chunks
+
+
+def format_srt_time(seconds):
+    """
+    Convert seconds to SRT time format (HH:MM:SS,mmm)
+    
+    Args:
+        seconds: Time in seconds (float)
+    
+    Returns:
+        Formatted time string
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def generate_srt_content(subtitle_data):
+    """
+    Generate SRT file content from subtitle data
+    
+    Args:
+        subtitle_data: List of dicts with 'start', 'end', 'text'
+    
+    Returns:
+        SRT formatted string
+    """
+    srt_lines = []
+    
+    for idx, item in enumerate(subtitle_data, 1):
+        srt_lines.append(str(idx))
+        srt_lines.append(f"{format_srt_time(item['start'])} --> {format_srt_time(item['end'])}")
+        srt_lines.append(item['text'])
+        srt_lines.append("")  # Empty line between subtitles
+    
+    return "\n".join(srt_lines)
+
+
+def save_srt_file(subtitle_data, output_path):
+    """Save subtitle data to SRT file"""
+    srt_content = generate_srt_content(subtitle_data)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(srt_content)
 
 # ==================== PROJECT MANAGEMENT ====================
 
@@ -443,13 +573,13 @@ def generate_single_audio(text, speed, num_step, guidance_scale):
         return None, f"✗ Error: {str(e)}"
 
 
-def process_project_chapters(start_chapter, end_chapter, regenerate, progress=gr.Progress()):
-    """Process project chapters - with tqdm progress bar"""
+def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt, min_words, max_chars, progress=gr.Progress()):
+    """Process project chapters - with configurable SRT generation"""
     if model is None:
-        return None, "✗ Please load model first!", None
+        return None, None, "✗ Please load model first!", None
     
     if not current_project:
-        return None, "✗ Please select a project first!", None
+        return None, None, "✗ Please select a project first!", None
     
     try:
         config = get_current_config()
@@ -461,6 +591,11 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, progress=gr
         
         output_dir = Path(proj['output_dir'])
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create SRT directory if needed
+        if enable_srt:
+            srt_dir = output_dir / "subtitles"
+            srt_dir.mkdir(parents=True, exist_ok=True)
         
         # Group by chapter
         chapters = {}
@@ -478,9 +613,9 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, progress=gr
             ]
         
         if not sorted_chapters:
-            return None, "✗ No chapters found in range!", None
+            return None, None, "✗ No chapters found in range!", None
         
-        # Filter out already generated chapters (unless regenerate=True)
+        # Filter out already generated chapters
         if not regenerate:
             generated_set = set(proj['generated_chapters'])
             sorted_chapters = [
@@ -489,120 +624,165 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, progress=gr
             ]
             
             if not sorted_chapters:
-                return None, "✓ All selected chapters already generated! (Check 'Regenerate' to force)", None
+                return None, None, "✓ All selected chapters already generated!", None
         
         total_chapters = len(sorted_chapters)
         result_files = []
-        newly_generated = []
+        result_srt_files = []
         
-        # Create tqdm progress bar for chapters
-        chapter_pbar = tqdm(
-            sorted_chapters,
-            desc="Chapters",
-            unit="chapter",
-            position=0,
-            leave=True
-        )
-        
-        # Process each chapter
-        for idx, (chapter_id, segments) in enumerate(chapter_pbar):
-            # Update Gradio progress
-            progress((idx, total_chapters), desc=f"Processing Chapter {chapter_id}")
+        # Main progress bar
+        with tqdm(total=total_chapters, desc="Overall Progress", unit="chapter") as pbar:
             
-            # Update tqdm description
-            chapter_pbar.set_description(f"Chapter {chapter_id}")
-            
-            logging.info(f"\n{'='*60}")
-            logging.info(f"Starting Chapter {chapter_id} ({idx+1}/{total_chapters})")
-            logging.info(f"{'='*60}")
-            
-            chapter_audio = AudioSegment.empty()
-            current_time = 0
-            
-            # Create tqdm progress bar for segments
-            segment_pbar = tqdm(
-                segments,
-                desc=f"  Segments",
-                unit="seg",
-                position=1,
-                leave=False
-            )
-            
-            # Generate all segments for this chapter
-            for seg_idx, segment in enumerate(segment_pbar, 1):
-                segment_pbar.set_description(f"  Segment {segment['id']}")
+            for idx, (chapter_id, segments) in enumerate(sorted_chapters):
+                progress((idx, total_chapters), desc=f"Chapter {chapter_id}")
+                pbar.set_description(f"Processing Chapter {chapter_id}")
                 
-                # Generate
-                temp_file = output_dir / f"temp_{segment['id']}.wav"
-                generate_sentence(
-                    save_path=str(temp_file),
-                    prompt_text=config["prompt_text"],
-                    prompt_wav=config["prompt_wav"],
-                    text=segment['text'],
-                    model=model,
-                    vocoder=vocoder,
-                    tokenizer=tokenizer,
-                    feature_extractor=feature_extractor,
-                    device=device,
-                    sampling_rate=sampling_rate,
-                    speed=config["default_speed"],
-                    num_step=config["default_num_step"],
-                    guidance_scale=config["default_guidance_scale"],
-                )
+                chapter_audio = AudioSegment.empty()
+                current_time = 0
+                chapter_subtitles = []
                 
-                # Load and append
-                audio = AudioSegment.from_wav(str(temp_file))
-                segment['start'] = round(current_time / 1000, 2)
-                segment['end'] = round((current_time + len(audio)) / 1000, 2)
+                # Process segments
+                for segment in tqdm(segments, desc=f"  Ch.{chapter_id} Segments", leave=False):
+                    
+                    if enable_srt:
+                        # Split text with minimum words constraint
+                        text_chunks = split_text_by_punctuation(
+                            segment['text'],
+                            min_words=int(min_words),
+                            max_chars=int(max_chars)
+                        )
+                        
+                        if not text_chunks:
+                            logging.warning(f"Skipping segment {segment['id']} - no valid chunks")
+                            continue
+                        
+                        logging.info(f"Segment {segment['id']}: {len(text_chunks)} chunks")
+                        
+                        # Generate audio for each chunk
+                        segment_start_time = current_time
+                        chunk_audios = []
+                        
+                        for chunk_idx, chunk_text in enumerate(text_chunks):
+                            temp_file = output_dir / f"temp_{segment['id']}_{chunk_idx}.wav"
+                            
+                            logging.debug(f"  Chunk {chunk_idx+1}/{len(text_chunks)}: {chunk_text[:50]}...")
+                            
+                            generate_sentence(
+                                save_path=str(temp_file),
+                                prompt_text=config["prompt_text"],
+                                prompt_wav=config["prompt_wav"],
+                                text=chunk_text,
+                                model=model,
+                                vocoder=vocoder,
+                                tokenizer=tokenizer,
+                                feature_extractor=feature_extractor,
+                                device=device,
+                                sampling_rate=sampling_rate,
+                                speed=config["default_speed"],
+                                num_step=config["default_num_step"],
+                                guidance_scale=config["default_guidance_scale"],
+                            )
+                            
+                            audio = AudioSegment.from_wav(str(temp_file))
+                            chunk_audios.append(audio)
+                            
+                            # Record subtitle timing
+                            chunk_start = current_time / 1000
+                            chunk_end = (current_time + len(audio)) / 1000
+                            
+                            chapter_subtitles.append({
+                                'start': chunk_start,
+                                'end': chunk_end,
+                                'text': chunk_text
+                            })
+                            
+                            current_time += len(audio)
+                            temp_file.unlink()
+                        
+                        # Combine chunk audios
+                        for audio in chunk_audios:
+                            chapter_audio += audio
+                        
+                        # Store segment-level timing in JSON
+                        segment['start'] = round(segment_start_time / 1000, 2)
+                        segment['end'] = round(current_time / 1000, 2)
+                    
+                    else:
+                        # Original logic: generate entire segment at once
+                        temp_file = output_dir / f"temp_{segment['id']}.wav"
+                        
+                        generate_sentence(
+                            save_path=str(temp_file),
+                            prompt_text=config["prompt_text"],
+                            prompt_wav=config["prompt_wav"],
+                            text=segment['text'],
+                            model=model,
+                            vocoder=vocoder,
+                            tokenizer=tokenizer,
+                            feature_extractor=feature_extractor,
+                            device=device,
+                            sampling_rate=sampling_rate,
+                            speed=config["default_speed"],
+                            num_step=config["default_num_step"],
+                            guidance_scale=config["default_guidance_scale"],
+                        )
+                        
+                        audio = AudioSegment.from_wav(str(temp_file))
+                        segment['start'] = round(current_time / 1000, 2)
+                        segment['end'] = round((current_time + len(audio)) / 1000, 2)
+                        
+                        chapter_audio += audio
+                        current_time += len(audio)
+                        temp_file.unlink()
                 
-                chapter_audio += audio
-                current_time += len(audio)
-                temp_file.unlink()
-            
-            # Close segment progress bar
-            segment_pbar.close()
-            
-            # Save chapter audio
-            chapter_file = output_dir / f"chapter_{chapter_id}.wav"
-            chapter_audio.export(str(chapter_file), format="wav")
-            result_files.append(str(chapter_file))
-            newly_generated.append(chapter_id)
-            
-            # Update generated chapters list
-            proj['generated_chapters'] = list(set(proj['generated_chapters'] + [chapter_id]))
-            
-            # Save updated JSON with timestamps (incremental)
-            output_json = output_dir / "data_updated.json"
-            with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            
-            # Save config (project info)
-            save_config()
-            
-            # Update chapter progress bar postfix
-            chapter_pbar.set_postfix({
-                'saved': chapter_file.name,
-                'duration': f"{current_time/1000:.1f}s",
-                'progress': f"{len(proj['generated_chapters'])}/{proj['total_chapters']}"
-            })
-            
-            logging.info(f"✓ Chapter {chapter_id} saved: {chapter_file}")
-            logging.info(f"  Duration: {current_time/1000:.2f}s")
-            logging.info(f"  Progress: {len(proj['generated_chapters'])}/{proj['total_chapters']} chapters")
+                # Save chapter audio
+                chapter_file = output_dir / f"chapter_{chapter_id}.wav"
+                chapter_audio.export(str(chapter_file), format="wav")
+                result_files.append(str(chapter_file))
+                
+                # Save SRT file if enabled
+                if enable_srt and chapter_subtitles:
+                    srt_file = srt_dir / f"chapter_{chapter_id}.srt"
+                    save_srt_file(chapter_subtitles, srt_file)
+                    result_srt_files.append(str(srt_file))
+                    logging.info(f"✓ SRT saved: {srt_file} ({len(chapter_subtitles)} entries)")
+                
+                # Update project data
+                proj['generated_chapters'] = list(set(proj['generated_chapters'] + [chapter_id]))
+                
+                # Save data
+                output_json = output_dir / "data_updated.json"
+                with open(output_json, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                save_config()
+                
+                # Update progress
+                pbar.update(1)
+                pbar.set_postfix({
+                    'completed': f"{len(proj['generated_chapters'])}/{proj['total_chapters']}",
+                    'duration': f"{current_time/1000:.1f}s"
+                })
         
-        # Close chapter progress bar
-        chapter_pbar.close()
+        # Return results
+        status_msg = f"✓ Generated {total_chapters} chapters! Total: {len(proj['generated_chapters'])}/{proj['total_chapters']}"
+        if enable_srt:
+            status_msg += f"\n✓ Generated {len(result_srt_files)} SRT files"
         
-        # Final status
         return (
             result_files,
-            f"✓ Generated {total_chapters} chapters! Total: {len(proj['generated_chapters'])}/{proj['total_chapters']}",
+            result_srt_files if enable_srt else None,
+            status_msg,
             get_chapters_status(current_project)
         )
     
     except Exception as e:
-        logging.error(f"Error in process_project_chapters: {str(e)}")
-        return None, f"✗ Error: {str(e)}", get_chapters_status(current_project) if current_project else None
+        logging.error(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None, f"✗ Error: {str(e)}", get_chapters_status(current_project) if current_project else None
+
+
+
 
 def get_generation_progress():
     """Get current generation progress"""
@@ -835,30 +1015,52 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
                 start_chapter_input = gr.Textbox(label="Start Chapter (optional)", placeholder="0001", value="")
                 end_chapter_input = gr.Textbox(label="End Chapter (optional)", placeholder="0005", value="")
             
-            regenerate_checkbox = gr.Checkbox(label="Regenerate existing chapters", value=False)
+            with gr.Row():
+                regenerate_checkbox = gr.Checkbox(label="Regenerate existing chapters", value=False)
+                enable_srt_checkbox = gr.Checkbox(
+                    label="Generate SRT subtitles",
+                    value=False,
+                    info="Enable to create subtitle files with fine-grained timing"
+                )
+            
+            with gr.Row():
+                min_words_input = gr.Slider(
+                    minimum=3,
+                    maximum=15,
+                    value=5,
+                    step=1,
+                    label="Minimum words per subtitle",
+                    info="Each subtitle chunk must have at least this many words"
+                )
+                max_chars_input = gr.Slider(
+                    minimum=50,
+                    maximum=200,
+                    value=100,
+                    step=10,
+                    label="Maximum characters per subtitle",
+                    info="Try to keep subtitles under this length"
+                )
+            
             process_btn = gr.Button("🎬 Generate Chapters", variant="primary", size="lg")
             
-            chapter_files_output = gr.File(label="Generated Chapter Files", file_count="multiple")
+            with gr.Row():
+                chapter_files_output = gr.File(label="Generated Chapter Audio Files", file_count="multiple")
+                srt_files_output = gr.File(label="Generated SRT Subtitle Files", file_count="multiple")
+            
             process_status = gr.Textbox(label="Status", interactive=False)
             process_chapters_status = gr.Textbox(label="Updated Chapters Status", lines=10, interactive=False)
             
             process_btn.click(
                 process_project_chapters,
-                inputs=[start_chapter_input, end_chapter_input, regenerate_checkbox],
-                outputs=[chapter_files_output, process_status, process_chapters_status]
-            )
-
-            progress_display = gr.Textbox(
-                label="Generation Progress",
-                value=get_generation_progress() if current_project else "No project",
-                interactive=False
-            )
-
-            # Refresh progress button
-            refresh_progress_btn = gr.Button("🔄 Refresh Progress")
-            refresh_progress_btn.click(
-                get_generation_progress,
-                outputs=[progress_display]
+                inputs=[
+                    start_chapter_input, 
+                    end_chapter_input, 
+                    regenerate_checkbox, 
+                    enable_srt_checkbox,
+                    min_words_input,
+                    max_chars_input
+                ],
+                outputs=[chapter_files_output, srt_files_output, process_status, process_chapters_status]
             )
         
         # Tab 6: Help
@@ -869,44 +1071,58 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             ### 1️⃣ Create Project
             - Go to **Project Management** tab
             - Enter Project ID and Name
-            - Upload JSON file with format
-                  {
-                    "data": [
-                      {"id": "0001_0001", "text": "...", "prompt": "..."}
-                    ]
-                  }
-    ```
-                - Click **Create Project**
-                
-                ### 2️⃣ Select Profile
-                - Go to **Profile Management**
-                - Select profile from dropdown
-                - Click **Switch to Selected Profile**
-                
-                ### 3️⃣ Load Model
-                - Go to **Model Management**
-                - Click **Load Model**
-                
-                ### 4️⃣ Generate Chapters
-                - Go to **Generate Project Chapters**
-                - Optionally specify chapter range (e.g., 0001 to 0005)
-                - Check **Regenerate** if you want to recreate existing chapters
-                - Click **Generate Chapters**
-                - System will only generate chapters that haven't been created yet (unless Regenerate is checked)
-                
-                ### 📊 Track Progress
-                - View **Chapters Status** in Project Management tab
-                - ✓ = Generated
-                - ✗ = Not generated yet
-                - Generated chapters are saved incrementally
-                - Re-running generation will skip completed chapters
-                
-                ### 💾 Data Persistence
-                - All project data is saved automatically
-                - Timestamps (start/end) are preserved in `data_updated.json`
-                - Generated chapters are tracked in config
-                - Can pause and resume generation anytime
-                """)
+            - Upload JSON file with format:
+        ```json
+              {
+                "data": [
+                  {"id": "0001_0001", "text": "...", "prompt": "..."}
+                ]
+              }
+        ```
+            - Click **Create Project**
+            
+            ### 2️⃣ Select Profile & Load Model
+            - Go to **Profile Management** → Select profile
+            - Go to **Model Management** → Load Model
+            
+            ### 3️⃣ Generate Chapters
+            - Go to **Generate Project Chapters**
+            - Optionally specify chapter range
+            - Check **Regenerate** to recreate existing chapters
+            - **NEW**: Check **Generate SRT subtitles** to create subtitle files
+            
+            ### 📝 SRT Subtitle Generation
+            When enabled:
+            - Text is automatically split by punctuation (., !, ?, ;, ,)
+            - Each chunk generates separate audio
+            - Fine-grained timing for subtitles
+            - Empty chunks (no letters/numbers) are skipped
+            - JSON still stores segment-level timing
+            - SRT files are saved in `chapters/subtitles/` folder
+            
+            **SRT Format Example:**
+        ```
+            1
+            00:00:00,000 --> 00:00:03,450
+            Mặt trời gay gắt chiếu rọi.
+            
+            2
+            00:00:03,450 --> 00:00:08,920
+            Trên đại lộ, một cỗ xe ngựa đang lao nhanh.
+        ```
+            
+            ### 📊 Track Progress
+            - View **Chapters Status** in Project Management
+            - ✓ = Generated, ✗ = Pending
+            - Data saved after each chapter
+            - Can pause and resume anytime
+            
+            ### 💡 Tips
+            - Use SRT mode for video subtitles
+            - Disable SRT for faster generation
+            - SRT timing is more accurate but slower
+            - Both audio and SRT can be downloaded
+            """)
 
 
 if __name__ == "__main__":
