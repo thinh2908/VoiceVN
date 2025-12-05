@@ -390,6 +390,38 @@ def get_pending_chapters(project_id):
     except:
         return []
 
+def verify_data_integrity(project_id):
+    """Verify that all generated chapters have timing info"""
+    if not project_id or project_id not in config_data["projects"]:
+        return "No project selected"
+    
+    proj = config_data["projects"][project_id]
+    output_json = Path(proj['output_dir']) / "data_updated.json"
+    
+    if not output_json.exists():
+        return "No data_updated.json found"
+    
+    with open(output_json, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # Group by chapter
+    chapters = {}
+    for item in data['data']:
+        chapter_id = item['id'].split('_')[0]
+        chapters.setdefault(chapter_id, []).append(item)
+    
+    report = []
+    generated_chapters = set(proj['generated_chapters'])
+    
+    for chapter_id in sorted(chapters.keys()):
+        segments = chapters[chapter_id]
+        has_timing = all('start' in s and 'end' in s for s in segments)
+        is_generated = chapter_id in generated_chapters
+        
+        status = "✓" if has_timing else "✗"
+        report.append(f"{status} Chapter {chapter_id}: {len(segments)} segments, timing={'YES' if has_timing else 'NO'}, generated={'YES' if is_generated else 'NO'}")
+    
+    return "\n".join(report)
 
 # ==================== PROFILE MANAGEMENT ====================
 
@@ -585,12 +617,24 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
         config = get_current_config()
         proj = config_data["projects"][current_project]
         
-        # Load JSON
-        with open(proj['json_path'], 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
+        # Load JSON (prefer existing updated version if available)
         output_dir = Path(proj['output_dir'])
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_json = output_dir / "data_updated.json"
+        
+        # Load from updated JSON if exists, otherwise from original
+        if output_json.exists():
+            logging.info(f"Loading existing data from {output_json}")
+            with open(output_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            logging.info(f"Loading original data from {proj['json_path']}")
+            with open(proj['json_path'], 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        
+        # Create mapping of segment ID to existing data (to preserve timestamps)
+        existing_segments = {item['id']: item for item in data['data']}
         
         # Create SRT directory if needed
         if enable_srt:
@@ -615,7 +659,7 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
         if not sorted_chapters:
             return None, None, "✗ No chapters found in range!", None
         
-        # Filter out already generated chapters
+        # Filter out already generated chapters (unless regenerate=True)
         if not regenerate:
             generated_set = set(proj['generated_chapters'])
             sorted_chapters = [
@@ -703,7 +747,7 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                         for audio in chunk_audios:
                             chapter_audio += audio
                         
-                        # Store segment-level timing in JSON
+                        # Update segment timing in the data structure
                         segment['start'] = round(segment_start_time / 1000, 2)
                         segment['end'] = round(current_time / 1000, 2)
                     
@@ -728,6 +772,8 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                         )
                         
                         audio = AudioSegment.from_wav(str(temp_file))
+                        
+                        # Update segment timing
                         segment['start'] = round(current_time / 1000, 2)
                         segment['end'] = round((current_time + len(audio)) / 1000, 2)
                         
@@ -750,8 +796,8 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                 # Update project data
                 proj['generated_chapters'] = list(set(proj['generated_chapters'] + [chapter_id]))
                 
-                # Save data
-                output_json = output_dir / "data_updated.json"
+                # Save data after each chapter
+                # IMPORTANT: This preserves timestamps from previous chapters
                 with open(output_json, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 save_config()
@@ -762,6 +808,10 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                     'completed': f"{len(proj['generated_chapters'])}/{proj['total_chapters']}",
                     'duration': f"{current_time/1000:.1f}s"
                 })
+                
+                logging.info(f"✓ Chapter {chapter_id} completed")
+                logging.info(f"  Audio: {chapter_file}")
+                logging.info(f"  Data saved to: {output_json}")
         
         # Return results
         status_msg = f"✓ Generated {total_chapters} chapters! Total: {len(proj['generated_chapters'])}/{proj['total_chapters']}"
@@ -880,6 +930,15 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             refresh_proj_btn.click(
                 lambda: gr.update(choices=get_project_names(), value=current_project),
                 outputs=[project_dropdown]
+            )
+            # In Project Management tab
+            with gr.Row():
+                verify_btn = gr.Button("🔍 Verify Data Integrity")
+                verify_output = gr.Textbox(label="Verification Result", lines=10, interactive=False)
+            
+            verify_btn.click(
+                lambda: verify_data_integrity(current_project),
+                outputs=[verify_output]
             )
         
         # Tab 2: Profile Management
