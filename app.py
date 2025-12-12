@@ -548,7 +548,7 @@ def load_model_func():
             feature_extractor,
             device,
             sampling_rate,
-        ) = load_model(config["model_dir"], lang="vi-vn-x-south")
+        ) = load_model(config["model_dir"])
         
         return f"✓ Model loaded successfully using profile '{current_profile}'!"
     except Exception as e:
