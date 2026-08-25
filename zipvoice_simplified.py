@@ -8,6 +8,7 @@ from pathlib import Path
 from vocos import Vocos
 
 from zipvoice.models.zipvoice import ZipVoice
+from zipvoice.models.zipvoice_distill import ZipVoiceDistill
 from zipvoice.tokenizer.tokenizer import EspeakTokenizer
 from zipvoice.utils.checkpoint import load_checkpoint
 from zipvoice.utils.feature import VocosFbank
@@ -22,29 +23,13 @@ from zipvoice.utils.infer import (
 )
 
 
-def load_model(model_dir: str, lang: str = "vi"):
-    """Load ZipVoice model và các components"""
-    model_dir = Path(model_dir)
-    model_ckpt = model_dir / "model.pt"
-    model_config = model_dir / "model.json"
-    token_file = model_dir / "tokens.txt"
 
-    tokenizer = EspeakTokenizer(token_file=token_file, lang=lang)
-    
-    with open(model_config, "r") as f:
-        config = json.load(f)
-
-    model = ZipVoice(
-        **config["model"],
-        vocab_size=tokenizer.vocab_size,
-        pad_id=tokenizer.pad_id,
-    )
+def _finalize_model(model, config, tokenizer, device, model_dir):
+    """Finalize model loading: load checkpoint, setup vocoder and feature extractor"""
+    model_ckpt = Path(model_dir) / "model.pt"
     
     load_checkpoint(filename=model_ckpt, model=model, strict=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
-    
     model = model.to(device)
     model.eval()
 
@@ -56,6 +41,52 @@ def load_model(model_dir: str, lang: str = "vi"):
     sampling_rate = config["feature"]["sampling_rate"]
 
     return model, vocoder, tokenizer, feature_extractor, device, sampling_rate
+
+
+def load_model(model_dir: str, lang: str = "vi"):
+    """Load ZipVoice model va cac components"""
+    model_dir = Path(model_dir)
+    model_config = model_dir / "model.json"
+    token_file = model_dir / "tokens.txt"
+
+    tokenizer = EspeakTokenizer(token_file=token_file, lang=lang)
+
+    with open(model_config, "r") as f:
+        config = json.load(f)
+
+    model = ZipVoice(
+        **config["model"],
+        vocab_size=tokenizer.vocab_size,
+        pad_id=tokenizer.pad_id,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
+
+    return _finalize_model(model, config, tokenizer, device, model_dir)
+
+
+def load_model_distill(model_dir: str, lang: str = "vi"):
+    """Load ZipVoice Distill model va cac components"""
+    model_dir = Path(model_dir)
+    model_config = model_dir / "model.json"
+    token_file = model_dir / "tokens.txt"
+
+    tokenizer = EspeakTokenizer(token_file=token_file, lang=lang)
+
+    with open(model_config, "r") as f:
+        config = json.load(f)
+
+    model = ZipVoiceDistill(
+        **config["model"],
+        vocab_size=tokenizer.vocab_size,
+        pad_id=tokenizer.pad_id,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device} (distill mode)")
+
+    return _finalize_model(model, config, tokenizer, device, model_dir)
 
 
 @torch.inference_mode()

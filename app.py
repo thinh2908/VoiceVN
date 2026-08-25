@@ -13,7 +13,7 @@ ZIP_VOICE_APP_PATH= os.getenv("ZIP_VOICE_APP_PATH")
 sys.path.append(ZIP_VOICE_REPO_PATH)
 sys.path.append(ZIP_VOICE_APP_PATH)
 
-from zipvoice_simplified import load_model, generate_sentence
+from zipvoice_simplified import load_model, load_model_distill, generate_sentence
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,6 +26,7 @@ tokenizer = None
 feature_extractor = None
 device = None
 sampling_rate = None
+is_distill = False
 config_data = {}
 current_profile = "default"
 current_project = None
@@ -530,17 +531,19 @@ def delete_profile(profile_name):
 
 # ==================== MODEL MANAGEMENT ====================
 
-def load_model_func():
+def load_model_func(distill=False):
     """Load ZipVoice model"""
-    global model, vocoder, tokenizer, feature_extractor, device, sampling_rate
+    global model, vocoder, tokenizer, feature_extractor, device, sampling_rate, is_distill
     
     try:
         if model is not None:
             return "⚠ Model already loaded!"
         
         config = get_current_config()
-        logging.info(f"Loading model from {config['model_dir']}...")
+        mode_str = "distill" if distill else "normal"
+        logging.info(f"Loading model from {config['model_dir']} (mode: {mode_str})...")
         
+        loader = load_model_distill if distill else load_model
         (
             model,
             vocoder,
@@ -548,9 +551,10 @@ def load_model_func():
             feature_extractor,
             device,
             sampling_rate,
-        ) = load_model(config["model_dir"])
+        ) = loader(config["model_dir"])
         
-        return f"✓ Model loaded successfully using profile '{current_profile}'!"
+        is_distill = distill
+        return f"✓ Model loaded successfully using profile '{current_profile}' (mode: {mode_str})!"
     except Exception as e:
         return f"✗ Error loading model: {str(e)}"
 
@@ -1033,13 +1037,19 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             gr.Markdown("### Load/Unload Model")
             gr.Markdown(f"*Using profile: **{current_profile}***")
             
+            distill_checkbox = gr.Checkbox(
+                label="Distill Model",
+                value=False,
+                info="Enable to use ZipVoiceDistill (faster inference with distilled checkpoint)"
+            )
+            
             with gr.Row():
                 load_model_btn = gr.Button("🔄 Load Model", variant="primary", size="lg")
                 unload_model_btn = gr.Button("🗑️ Unload Model", size="lg")
             
             model_status = gr.Textbox(label="Model Status", interactive=False)
             
-            load_model_btn.click(load_model_func, outputs=[model_status])
+            load_model_btn.click(load_model_func, inputs=[distill_checkbox], outputs=[model_status])
             unload_model_btn.click(unload_model_func, outputs=[model_status])
         
         # Tab 4: Single Text Generation
