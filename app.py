@@ -972,10 +972,18 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
                     profile_desc = gr.Textbox(label="Description", value=get_current_config().get("description", ""), lines=2)
                     model_dir_input = gr.Textbox(label="Model Directory", value=get_current_config().get("model_dir", ""))
                     prompt_wav_input = gr.Textbox(label="Prompt Audio File", value=get_current_config().get("prompt_wav", ""))
+                    play_sample_btn = gr.Button("🔊 Play Sample Audio", size="sm")
+                    sample_audio_player = gr.Audio(label="Sample Audio Preview", type="filepath", interactive=False)
                 
                 with gr.Column():
                     prompt_text_input = gr.Textbox(label="Reference Text", value=get_current_config().get("prompt_text", ""), lines=5)
                     output_dir_input = gr.Textbox(label="Output Directory", value=get_current_config().get("output_dir", ""))
+            
+            play_sample_btn.click(
+                lambda wav_path: wav_path if wav_path and Path(wav_path).exists() else None,
+                inputs=[prompt_wav_input],
+                outputs=[sample_audio_player]
+            )
             
             with gr.Row():
                 speed_input = gr.Slider(0.5, 2.0, get_current_config().get("default_speed", 1.0), step=0.1, label="Speed")
