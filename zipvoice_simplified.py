@@ -43,13 +43,36 @@ def _finalize_model(model, config, tokenizer, device, model_dir):
     return model, vocoder, tokenizer, feature_extractor, device, sampling_rate
 
 
-def load_model(model_dir: str, lang: str = "vi"):
+def create_tokenizer(tokenizer_type: str = "espeak", token_file = None, lang: str = "vi"):
+    """Create tokenizer based on tokenizer_type ('espeak', 'vig2p', 'sea_g2p' / 'sea-g2p', etc.)"""
+    tok_type = str(tokenizer_type).lower().replace("-", "_").strip()
+    if tok_type == "vig2p":
+        from zipvoice.tokenizer.vig2p_tokenizer import ViG2PTokenizer
+        return ViG2PTokenizer(token_file=token_file, lang=lang)
+    elif tok_type in ("sea_g2p", "seag2p", "sea"):
+        from zipvoice.tokenizer.sea_g2p_tokenizer import SEATokenizer
+        return SEATokenizer(token_file=token_file, lang=lang)
+    elif tok_type == "emilia":
+        from zipvoice.tokenizer.tokenizer import EmiliaTokenizer
+        return EmiliaTokenizer(token_file=token_file)
+    elif tok_type == "libritts":
+        from zipvoice.tokenizer.tokenizer import LibriTTSTokenizer
+        return LibriTTSTokenizer(token_file=token_file)
+    elif tok_type == "simple":
+        from zipvoice.tokenizer.tokenizer import SimpleTokenizer
+        return SimpleTokenizer(token_file=token_file)
+    else:
+        from zipvoice.tokenizer.tokenizer import EspeakTokenizer
+        return EspeakTokenizer(token_file=token_file, lang=lang)
+
+
+def load_model(model_dir: str, lang: str = "vi", tokenizer_type: str = "espeak"):
     """Load ZipVoice model va cac components"""
     model_dir = Path(model_dir)
     model_config = model_dir / "model.json"
     token_file = model_dir / "tokens.txt"
 
-    tokenizer = EspeakTokenizer(token_file=token_file, lang=lang)
+    tokenizer = create_tokenizer(tokenizer_type=tokenizer_type, token_file=token_file, lang=lang)
 
     with open(model_config, "r") as f:
         config = json.load(f)
@@ -61,18 +84,18 @@ def load_model(model_dir: str, lang: str = "vi"):
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
+    logging.info(f"Using device: {device} (tokenizer: {tokenizer_type})")
 
     return _finalize_model(model, config, tokenizer, device, model_dir)
 
 
-def load_model_distill(model_dir: str, lang: str = "vi"):
+def load_model_distill(model_dir: str, lang: str = "vi", tokenizer_type: str = "espeak"):
     """Load ZipVoice Distill model va cac components"""
     model_dir = Path(model_dir)
     model_config = model_dir / "model.json"
     token_file = model_dir / "tokens.txt"
 
-    tokenizer = EspeakTokenizer(token_file=token_file, lang=lang)
+    tokenizer = create_tokenizer(tokenizer_type=tokenizer_type, token_file=token_file, lang=lang)
 
     with open(model_config, "r") as f:
         config = json.load(f)
@@ -84,7 +107,7 @@ def load_model_distill(model_dir: str, lang: str = "vi"):
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device} (distill mode)")
+    logging.info(f"Using device: {device} (distill mode, tokenizer: {tokenizer_type})")
 
     return _finalize_model(model, config, tokenizer, device, model_dir)
 
@@ -97,7 +120,7 @@ def generate_sentence(
     text: str,
     model: torch.nn.Module,
     vocoder: torch.nn.Module,
-    tokenizer: EspeakTokenizer,
+    tokenizer,
     feature_extractor: VocosFbank,
     device: torch.device,
     num_step: int = 16,
@@ -125,8 +148,16 @@ def generate_sentence(
     tokens_str = tokenizer.texts_to_tokens([text])[0]
     prompt_tokens_str = tokenizer.texts_to_tokens([prompt_text])[0]
 
-    token_duration = (prompt_wav.shape[-1] / sampling_rate) / (len(prompt_tokens_str) * speed)
-    max_tokens = int((25 - prompt_duration) / token_duration)
+    tag = "viG2P" if "ViG2PTokenizer" in type(tokenizer).__name__ else ("SEA-G2P" if "SEATokenizer" in type(tokenizer).__name__ else "Phonemes")
+    logging.debug(f"[{tag}] Prompt text: {prompt_text}")
+    logging.debug(f"[{tag}] Prompt phonemes: {''.join(prompt_tokens_str)}")
+    logging.debug(f"[{tag}] Target text: {text}")
+    logging.debug(f"[{tag}] Target phonemes: {''.join(tokens_str)}")
+
+    token_duration = (prompt_wav.shape[-1] / sampling_rate) / (
+        max(len(prompt_tokens_str), 1) * speed
+    )
+    max_tokens = int((25 - prompt_duration) / max(token_duration, 1e-4))
     chunked_tokens_str = chunk_tokens_punctuation(tokens_str, max_tokens=max_tokens)
 
     chunked_tokens = tokenizer.tokens_to_token_ids(chunked_tokens_str)

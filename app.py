@@ -61,7 +61,8 @@ def load_config():
                     "output_dir": "/content/output",
                     "default_speed": 1.0,
                     "default_num_step": 16,
-                    "default_guidance_scale": 1.0
+                    "default_guidance_scale": 1.0,
+                    "tokenizer": "espeak"
                 }
             },
             "projects": {}
@@ -78,7 +79,10 @@ def save_config():
 
 def get_current_config():
     """Get current profile config"""
-    return config_data["profiles"].get(current_profile, config_data["profiles"]["default"])
+    cfg = config_data["profiles"].get(current_profile, config_data["profiles"]["default"])
+    if "tokenizer" not in cfg:
+        cfg["tokenizer"] = "espeak"
+    return cfg
 
 
 def get_profile_names():
@@ -438,7 +442,8 @@ def get_profile_info(profile_name):
         profile.get("output_dir", ""),
         profile.get("default_speed", 1.0),
         profile.get("default_num_step", 16),
-        profile.get("default_guidance_scale", 1.0)
+        profile.get("default_guidance_scale", 1.0),
+        profile.get("tokenizer", "espeak")
     )
 
 
@@ -451,6 +456,7 @@ def switch_profile(profile_name):
         save_config()
         
         profile = config_data["profiles"][profile_name]
+        tok = profile.get("tokenizer", "espeak")
         return (
             f"✓ Switched to profile: {profile['name']}",
             profile.get("name", ""),
@@ -461,13 +467,15 @@ def switch_profile(profile_name):
             profile.get("output_dir", ""),
             profile.get("default_speed", 1.0),
             profile.get("default_num_step", 16),
-            profile.get("default_guidance_scale", 1.0)
+            profile.get("default_guidance_scale", 1.0),
+            tok,
+            tok
         )
-    return "✗ Profile not found!", "", "", "", "", "", "", 1.0, 16, 1.0
+    return "✗ Profile not found!", "", "", "", "", "", "", 1.0, 16, 1.0, "espeak", "espeak"
 
 
 def update_current_profile(name, description, model_dir, prompt_wav, 
-                          prompt_text, output_dir, speed, num_step, guidance_scale):
+                          prompt_text, output_dir, speed, num_step, guidance_scale, tokenizer="espeak"):
     """Update current profile"""
     config_data["profiles"][current_profile].update({
         "name": name,
@@ -478,14 +486,15 @@ def update_current_profile(name, description, model_dir, prompt_wav,
         "output_dir": output_dir,
         "default_speed": speed,
         "default_num_step": num_step,
-        "default_guidance_scale": guidance_scale
+        "default_guidance_scale": guidance_scale,
+        "tokenizer": tokenizer
     })
     save_config()
     return f"✓ Profile '{current_profile}' updated successfully!"
 
 
 def create_new_profile(profile_id, name, description, model_dir, prompt_wav, 
-                       prompt_text, output_dir, speed, num_step, guidance_scale):
+                       prompt_text, output_dir, speed, num_step, guidance_scale, tokenizer="espeak"):
     """Create a new profile"""
     if not profile_id:
         return "✗ Profile ID cannot be empty!"
@@ -502,7 +511,8 @@ def create_new_profile(profile_id, name, description, model_dir, prompt_wav,
         "output_dir": output_dir,
         "default_speed": speed,
         "default_num_step": num_step,
-        "default_guidance_scale": guidance_scale
+        "default_guidance_scale": guidance_scale,
+        "tokenizer": tokenizer
     }
     
     save_config()
@@ -531,7 +541,7 @@ def delete_profile(profile_name):
 
 # ==================== MODEL MANAGEMENT ====================
 
-def load_model_func(distill=False):
+def load_model_func(distill=False, tokenizer_type=None):
     """Load ZipVoice model"""
     global model, vocoder, tokenizer, feature_extractor, device, sampling_rate, is_distill
     
@@ -540,8 +550,9 @@ def load_model_func(distill=False):
             return "⚠ Model already loaded!"
         
         config = get_current_config()
+        tok_type = tokenizer_type or config.get("tokenizer", "espeak")
         mode_str = "distill" if distill else "normal"
-        logging.info(f"Loading model from {config['model_dir']} (mode: {mode_str})...")
+        logging.info(f"Loading model from {config['model_dir']} (mode: {mode_str}, tokenizer: {tok_type})...")
         
         loader = load_model_distill if distill else load_model
         (
@@ -551,10 +562,10 @@ def load_model_func(distill=False):
             feature_extractor,
             device,
             sampling_rate,
-        ) = loader(config["model_dir"])
+        ) = loader(config["model_dir"], tokenizer_type=tok_type)
         
         is_distill = distill
-        return f"✓ Model loaded successfully using profile '{current_profile}' (mode: {mode_str})!"
+        return f"✓ Model loaded successfully using profile '{current_profile}' (mode: {mode_str}, tokenizer: {tok_type})!"
     except Exception as e:
         return f"✗ Error loading model: {str(e)}"
 
@@ -971,6 +982,12 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
                     profile_name = gr.Textbox(label="Profile Name", value=get_current_config().get("name", ""))
                     profile_desc = gr.Textbox(label="Description", value=get_current_config().get("description", ""), lines=2)
                     model_dir_input = gr.Textbox(label="Model Directory", value=get_current_config().get("model_dir", ""))
+                    profile_tokenizer = gr.Dropdown(
+                        choices=["espeak", "vig2p", "sea-g2p"],
+                        value=get_current_config().get("tokenizer", "espeak"),
+                        label="Default Tokenizer / G2P",
+                        interactive=True
+                    )
                     prompt_wav_input = gr.Textbox(label="Prompt Audio File", value=get_current_config().get("prompt_wav", ""))
                     play_sample_btn = gr.Button("🔊 Play Sample Audio", size="sm")
                     sample_audio_player = gr.Audio(label="Sample Audio Preview", type="filepath", interactive=False)
@@ -1002,6 +1019,12 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             with gr.Row():
                 new_profile_id = gr.Textbox(label="Profile ID", placeholder="profile_id")
                 new_profile_name = gr.Textbox(label="Display Name", placeholder="My Voice Profile")
+                new_profile_tokenizer = gr.Dropdown(
+                    choices=["espeak", "vig2p", "sea-g2p"],
+                    value="espeak",
+                    label="Default Tokenizer / G2P",
+                    interactive=True
+                )
             
             new_profile_desc = gr.Textbox(label="Description", placeholder="Description...", lines=2)
             
@@ -1011,23 +1034,17 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             # Event handlers
             def update_profile_info(profile_name):
                 profile = config_data["profiles"].get(profile_name, {})
-                info = f"{profile.get('name', 'N/A')} - {profile.get('description', 'No description')}"
+                tok = profile.get("tokenizer", "espeak")
+                info = f"{profile.get('name', 'N/A')} - {profile.get('description', 'No description')} | Tokenizer: {tok}"
                 return info
             
             profile_dropdown.change(update_profile_info, inputs=[profile_dropdown], outputs=[profile_info_display])
             refresh_btn.click(lambda: gr.update(choices=get_profile_names(), value=current_profile), outputs=[profile_dropdown])
             
-            switch_btn.click(
-                switch_profile,
-                inputs=[profile_dropdown],
-                outputs=[switch_status, profile_name, profile_desc, model_dir_input, prompt_wav_input, 
-                        prompt_text_input, output_dir_input, speed_input, num_step_input, guidance_scale_input]
-            )
-            
             update_profile_btn.click(
                 update_current_profile,
                 inputs=[profile_name, profile_desc, model_dir_input, prompt_wav_input, prompt_text_input, 
-                       output_dir_input, speed_input, num_step_input, guidance_scale_input],
+                       output_dir_input, speed_input, num_step_input, guidance_scale_input, profile_tokenizer],
                 outputs=[update_status]
             )
             
@@ -1036,7 +1053,8 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             create_profile_btn.click(
                 create_new_profile,
                 inputs=[new_profile_id, new_profile_name, new_profile_desc, model_dir_input, prompt_wav_input, 
-                       prompt_text_input, output_dir_input, speed_input, num_step_input, guidance_scale_input],
+                       prompt_text_input, output_dir_input, speed_input, num_step_input, guidance_scale_input,
+                       new_profile_tokenizer],
                 outputs=[create_status]
             )
         
@@ -1045,11 +1063,19 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             gr.Markdown("### Load/Unload Model")
             gr.Markdown(f"*Using profile: **{current_profile}***")
             
-            distill_checkbox = gr.Checkbox(
-                label="Distill Model",
-                value=False,
-                info="Enable to use ZipVoiceDistill (faster inference with distilled checkpoint)"
-            )
+            with gr.Row():
+                distill_checkbox = gr.Checkbox(
+                    label="Distill Model",
+                    value=False,
+                    info="Enable to use ZipVoiceDistill (faster inference with distilled checkpoint)"
+                )
+                tokenizer_dropdown = gr.Dropdown(
+                    choices=["espeak", "vig2p", "sea-g2p"],
+                    value=get_current_config().get("tokenizer", "espeak"),
+                    label="Tokenizer / G2P Engine",
+                    info="Phonemizer engine: espeak (default), vig2p, or sea-g2p",
+                    interactive=True
+                )
             
             with gr.Row():
                 load_model_btn = gr.Button("🔄 Load Model", variant="primary", size="lg")
@@ -1057,7 +1083,20 @@ with gr.Blocks(title="ZipVoice TTS", theme=gr.themes.Soft()) as app:
             
             model_status = gr.Textbox(label="Model Status", interactive=False)
             
-            load_model_btn.click(load_model_func, inputs=[distill_checkbox], outputs=[model_status])
+            # Switch profile handler updating both tabs
+            switch_btn.click(
+                switch_profile,
+                inputs=[profile_dropdown],
+                outputs=[switch_status, profile_name, profile_desc, model_dir_input, prompt_wav_input, 
+                        prompt_text_input, output_dir_input, speed_input, num_step_input, guidance_scale_input,
+                        profile_tokenizer, tokenizer_dropdown]
+            )
+            
+            load_model_btn.click(
+                load_model_func,
+                inputs=[distill_checkbox, tokenizer_dropdown],
+                outputs=[model_status]
+            )
             unload_model_btn.click(unload_model_func, outputs=[model_status])
         
         # Tab 4: Single Text Generation
