@@ -225,7 +225,16 @@ def cross_fade_concat(
             ],
             dim=-1,
         )
-
+         # --- Bổ sung Fade-in đầu và Fade-out đuôi ---
+        edge_k = min(fade_samples, final.shape[-1] // 2)
+        if edge_k > 0:
+            # Fade-in: từ 0 -> 1 cho edge_k mẫu đầu tiên
+            fade_in = torch.linspace(0, 1, edge_k, device=final.device)[None]
+            final[..., :edge_k] = final[..., :edge_k] * fade_in
+    
+            # Fade-out: từ 1 -> 0 cho edge_k mẫu cuối cùng
+            fade_out = torch.linspace(1, 0, edge_k, device=final.device)[None]
+            final[..., -edge_k:] = final[..., -edge_k:] * fade_out
     return final
 
 
