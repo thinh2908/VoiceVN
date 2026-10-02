@@ -620,6 +620,25 @@ def generate_single_audio(text, speed, num_step, guidance_scale):
         return None, f"✗ Error: {str(e)}"
 
 
+def normalize_audio_chunk(audio: AudioSegment, target_dbfs: float = -20.0, fade_ms: int = 15) -> AudioSegment:
+    """Normalize AudioSegment to target dBFS and apply micro fade-in/fade-out to avoid volume burst and pops"""
+    if len(audio) == 0:
+        return audio
+    
+    # Apply micro fade-in/fade-out to smooth boundaries
+    if len(audio) > fade_ms * 2 and fade_ms > 0:
+        audio = audio.fade_in(fade_ms).fade_out(fade_ms)
+        
+    if audio.dBFS != float('-inf'):
+        gain = target_dbfs - audio.dBFS
+        audio = audio.apply_gain(gain)
+        # Ensure peak does not clip (headroom of -0.5 dBFS)
+        if audio.max_dBFS > -0.5:
+            audio = audio.apply_gain(-0.5 - audio.max_dBFS)
+            
+    return audio
+
+
 def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt, min_words, max_chars, progress=gr.Progress()):
     """Process project chapters - with configurable SRT generation"""
     if model is None:
@@ -743,6 +762,7 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                             )
                             
                             audio = AudioSegment.from_wav(str(temp_file))
+                            audio = normalize_audio_chunk(audio, target_dbfs=-20.0, fade_ms=15)
                             chunk_audios.append(audio)
                             
                             # Record subtitle timing
@@ -787,6 +807,7 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                         )
                         
                         audio = AudioSegment.from_wav(str(temp_file))
+                        audio = normalize_audio_chunk(audio, target_dbfs=-20.0, fade_ms=15)
                         
                         # Update segment timing
                         segment['start'] = round(current_time / 1000, 2)
@@ -796,6 +817,10 @@ def process_project_chapters(start_chapter, end_chapter, regenerate, enable_srt,
                         current_time += len(audio)
                         temp_file.unlink()
                 
+                # Master peak normalization to prevent clipping and keep consistent chapter volume
+                if len(chapter_audio) > 0 and chapter_audio.max_dBFS > -0.5:
+                    chapter_audio = chapter_audio.apply_gain(-0.5 - chapter_audio.max_dBFS)
+
                 # Save chapter audio
                 chapter_file = output_dir / f"chapter_{chapter_id}.wav"
                 chapter_audio.export(str(chapter_file), format="wav")

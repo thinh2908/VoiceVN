@@ -191,8 +191,6 @@ def generate_sentence(
         batch_wav = []
         for i in range(pred_features.size(0)):
             wav = vocoder.decode(pred_features[i][None, :, : pred_features_lens[i]]).squeeze(1).clamp(-1, 1)
-            if prompt_rms < target_rms:
-                wav = wav * prompt_rms / target_rms
             batch_wav.append(wav)
         chunked_wavs.extend(batch_wav)
 
@@ -200,5 +198,21 @@ def generate_sentence(
     sequential_chunked_wavs = [wav for _, wav in sorted(indexed_chunked_wavs, key=lambda x: x[0])]
     final_wav = cross_fade_concat(sequential_chunked_wavs, fade_duration=0.1, sample_rate=sampling_rate)
     final_wav = remove_silence(final_wav, sampling_rate, only_edge=(not remove_long_sil), trail_sil=0)
+
+    # Normalize RMS volume consistently across all generations
+    cur_rms = torch.sqrt(torch.mean(torch.square(final_wav)))
+    norm_target = prompt_rms if (target_rms > 0 and prompt_rms < target_rms) else (target_rms if target_rms > 0 else cur_rms)
+    if cur_rms > 1e-5 and norm_target > 0:
+        final_wav = final_wav * (norm_target / cur_rms)
+
+    final_wav = final_wav.clamp(-0.99, 0.99)
+
+    # Apply 15ms micro fade-in and fade-out to prevent onset burst and boundary clicks
+    fade_len = int(sampling_rate * 0.015)
+    if final_wav.shape[-1] > fade_len * 2 and fade_len > 0:
+        fade_curve_in = torch.linspace(0.0, 1.0, fade_len, device=final_wav.device)
+        fade_curve_out = torch.linspace(1.0, 0.0, fade_len, device=final_wav.device)
+        final_wav[..., :fade_len] *= fade_curve_in
+        final_wav[..., -fade_len:] *= fade_curve_out
 
     torchaudio.save(save_path, final_wav.cpu(), sample_rate=sampling_rate)
